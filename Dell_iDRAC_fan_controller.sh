@@ -108,6 +108,54 @@ function convert_current_fan_value_to_hexadecimal_format () {
     HEXADECIMAL_CURRENT_FAN_SPEED=$(printf '0x%02x' $CURRENT_FAN_SPEED)
 }
 
+# Obtain the ID of your flash drive (your flash drive is named "UNRAID" right?)
+flash=/dev/$(ls -l /dev/disk/by-label| grep UNRAID | cut -d/ -f3 | cut -c 1-3)
+
+# Get list of included drives
+if [[ -z $EXCLUDE ]]; then
+  DRIVES=$(ls /dev/{[hs]d*[a-z],nvme[0-9]} | grep -v "$flash")
+else
+  DRIVES=$(ls /dev/{[hs]d*[a-z],nvme[0-9]} | grep -v "$flash" | grep -v "/dev/$(echo $EXCLUDE | sed -e $'s/,/\\\n/g' | sed -e 's/[np][0-9]//g')")
+fi
+
+# Count the number of drives in your array (ignoring the flash drive we identified)
+NUM_OF_DRIVES=$(ls /dev/{[hs]d*[a-z],nvme[0-9]} | grep -v "$flash" | wc -l)
+
+# Identify the included drives in your array so we can test their temperature
+COUNT=1
+for d in $DRIVES; do
+  HD[$COUNT]=$d
+  echo HDD=${HD[$COUNT]}                               # Uncomment for debugging
+  COUNT=$[$COUNT+1]
+done
+
+ get current Unraid version
+source /etc/unraid-version
+
+function version() {
+  # normalize version string for comparison
+  echo $1|awk -F. '{printf("%d%03d%03d%03d\n",$1,$2,$3,$4);}'
+}
+
+function_get_highest_hd_temp() {
+  HIGHEST_TEMP=0
+  [[ $(version $version) -ge $(version "6.8.9") ]] && HDD=1 || HDD=
+  for DISK in "${HD[@]}"; do
+    # Get disk state using sdspin (new) or hdparm (legacy)
+    [[ -n $HDD ]] && SLEEPING=`sdspin ${DISK}; echo $?` || SLEEPING=`hdparm -C ${DISK}|grep -c standby`
+    if [[ $SLEEPING -eq 0 ]]; then
+      if [[ $DISK == /dev/nvme[0-9] ]]; then
+        CURRENT_TEMP=$(smartctl -n standby -A $DISK | awk '$1=="Temperature:" {print $2;exit}')
+      else
+        CURRENT_TEMP=$(smartctl -n standby -A $DISK | awk '$1==190||$1==194 {print $10;exit} $1=="Current"&&$3=="Temperature:" {print $4;exit}')
+      fi
+      if [[ $HIGHEST_TEMP -le $CURRENT_TEMP ]]; then
+        HIGHEST_TEMP=$CURRENT_TEMP
+      fi
+    fi
+  done
+}
+
 # Check if FAN_SPEED and HIGH_FAN_SPEED variable is in hexadecimal format. If not, convert it to hexadecimal
 if [[ $FAN_SPEED == 0x* ]]
 then
